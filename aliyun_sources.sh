@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+MIRROR_URL="https://mirrors.aliyun.com"
+
 # 检查是否以 root 权限运行
 if [ "$(id -u)" != "0" ]; then
    echo "此脚本需要以 root 权限运行，请使用 sudo 或切换到 root 用户"
@@ -29,23 +31,46 @@ echo "检测到发行版: $DISTRO, 版本代号: $CODENAME"
 
 # 备份 APT 配置
 BACKUP_DIR="/etc/apt/backup.$(date +%F_%H-%M-%S)"
-
 echo "创建备份目录: $BACKUP_DIR"
-
 mkdir -p "$BACKUP_DIR"
 
-cp -a /etc/apt/sources.list* "$BACKUP_DIR"/ 2>/dev/null || true
-cp -a /etc/apt/sources.list.d "$BACKUP_DIR"/ 2>/dev/null || true
+shopt -s nullglob
+SOURCE_PATHS=(
+    /etc/apt/sources.list
+    /etc/apt/sources.list.d/*.list
+    /etc/apt/sources.list.d/*.sources
+)
+shopt -u nullglob
+
+if [ ${#SOURCE_PATHS[@]} -eq 0 ]; then
+    echo "备份失败：未找到任何 APT 源配置文件"
+    exit 1
+fi
+
+for f in "${SOURCE_PATHS[@]}"; do
+    dest="$BACKUP_DIR/${f#/}"
+    mkdir -p -- "${dest%/*}"
+    cp -a -- "$f" "$dest"
+done
 
 echo "APT 配置已备份到 $BACKUP_DIR"
 
 
 # 检测版本，并替换为阿里云镜像源
-MIRROR_URL="https://mirrors.aliyun.com"
+
+# 清空旧的传统 sources.list，避免与 DEB822 双重生效
+disable_legacy_sources_list() {
+    if [ -s /etc/apt/sources.list ] && grep -qE '^\s*deb ' /etc/apt/sources.list; then
+        echo "检测到旧 sources.list 仍有生效配置，已注释禁用（备份中保留原件）"
+        sed -i 's/^\(\s*deb\s\)/#\1/' /etc/apt/sources.list
+    fi
+}
+
 if [[ "$DISTRO" == "ubuntu" ]]; then
     if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
     	echo "检测到 DEB822 配置，正在替换为阿里云镜像源..."
         # 使用 DEB822 格式的 sources.list.d
+		disable_legacy_sources_list
         cat > /etc/apt/sources.list.d/ubuntu.sources <<EOF
 Types: deb
 URIs: $MIRROR_URL/ubuntu
@@ -82,6 +107,7 @@ elif [[ "$DISTRO" == "debian" ]]; then
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then
         echo "检测到 DEB822 配置，正在替换为阿里云镜像源..."
         # 使用 DEB822 格式的 sources.list.d
+		disable_legacy_sources_list
         cat > /etc/apt/sources.list.d/debian.sources <<EOF  
 Types: deb
 URIs: ${MIRROR_URL}/debian
